@@ -75,18 +75,92 @@ jobs:
           # 체크아웃·zip 다운로드·파일 복사 등 파일이 어떤 경로로 왔든 동작해야 한다.
           bash probe/acl-probe "${args[@]}" 2>&1 | tee probe.log
 
-      - name: 요약 기록
+      # 프로버가 마지막에 내보내는 ACL_PROBE_RESULT 한 줄만 읽는다.
+      # 한글 문장을 파싱하지 않으므로 문구가 바뀌어도 깨지지 않는다.
+      - name: ACK 결과 기록
+        id: result
         if: always()
         run: |
+          line="$(grep -m1 '^ACL_PROBE_RESULT ' probe.log 2>/dev/null || true)"
+
+          if [ -z "$line" ]; then
+            echo "::warning title=송출 결과::ACL_PROBE_RESULT 줄을 찾지 못했습니다. 프로버가 중간에 죽었을 수 있습니다."
+            {
+              echo "acks=unknown"
+              echo "ack_mode=unknown"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # "key=value" 토큰에서 값 하나를 꺼낸다.
+          field() {
+            printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -n1
+          }
+
+          sent=$(field sent)
+          bursts_done=$(field bursts_done)
+          bursts_total=$(field bursts_total)
+          ack_mode=$(field ack_mode)
+          acks=$(field acks)
+          min_acks=$(field min_acks)
+          early=$(field early)
+          src=$(field src)
+          preflight=$(field preflight)
+
+          # 뒤따르는 스텝·잡이 쓸 수 있게 출력값으로 남긴다.
+          {
+            echo "sent=$sent"
+            echo "acks=$acks"
+            echo "min_acks=$min_acks"
+            echo "ack_mode=$ack_mode"
+            echo "early=$early"
+          } >> "$GITHUB_OUTPUT"
+
+          # job 로그에 한 줄로 남기고 실행 주석으로도 띄운다.
+          if [ "$ack_mode" = "1" ]; then
+            if [ "$early" = "1" ]; then
+              echo "::notice title=ACK 수신::서로 다른 ${acks}개 포트에서 ACK 회신 (임계 ${min_acks}) — 조기 종료, ${sent}발 송신"
+            elif [ "$acks" = "0" ]; then
+              echo "::notice title=ACK 수신::ACK 0건 (임계 ${min_acks}) — 서버 아웃바운드 UDP 가 막혔을 수 있습니다. 실패가 아닙니다."
+            else
+              echo "::notice title=ACK 수신::서로 다른 ${acks}개 포트에서 ACK 회신 (임계 ${min_acks} 미달) — ${sent}발 송신"
+            fi
+          else
+            echo "::notice title=ACK 수신::ACK 대기 없음(--no-ack) — ${sent}발 송신"
+          fi
+
           {
             echo '## ACL 점검 — 송출 결과'
+            echo
+            if [ "$ack_mode" = "1" ]; then
+              echo "### ACK: 서로 다른 **${acks}개** 포트에서 회신 (임계 ${min_acks})"
+            else
+              echo '### ACK 대기 없음 (`--no-ack`)'
+            fi
+            echo
+            echo '| 항목 | 값 |'
+            echo '|---|---|'
+            echo "| 송신 발수 | ${sent} |"
+            echo "| 버스트 | ${bursts_done} / ${bursts_total} |"
+            echo "| ACK 회신 포트 수 | ${acks} |"
+            echo "| ACK 임계값 | ${min_acks} |"
+            echo "| 조기 종료 | $( [ "$early" = "1" ] && echo '예' || echo '아니오' ) |"
+            echo "| 송출 소스 IP | ${src} |"
+            echo "| 사전 점검 | ${preflight} |"
             echo
             echo '> **이 잡의 성공은 송신 완료를 뜻하며 ACL 판정이 아닙니다.**'
             echo '> 판정은 수신 측(`acl-listen`)의 종료코드에만 존재합니다.'
             echo '>'
+            echo '> ACK 는 조기 종료 장치일 뿐입니다. ACK 가 0건이어도 인바운드가'
+            echo '> 열려 있을 수 있습니다 — 서버에서 나가는 UDP 가 막히면 ACK 는 오지 않습니다.'
+            echo '>'
             echo '> 사전 점검이 성공했어도 UDP 53 만 증명하며 고포트 egress 의 보증은 아닙니다.'
+            echo
+            echo '<details><summary>전체 로그</summary>'
             echo
             echo '```'
             cat probe.log 2>/dev/null || echo '(로그 없음)'
             echo '```'
+            echo
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
