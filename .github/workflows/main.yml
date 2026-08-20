@@ -1,0 +1,81 @@
+name: ACL 점검 — 송출
+
+# 외부에서 신규 서버로 UDP 프로브를 쏜다.
+#
+# 이 잡의 성공은 "송신 완료"만 뜻하며 ACL 판정이 아니다.
+# 판정은 수신 측 acl-listen 의 종료코드에만 존재한다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_target:
+        description: '외부 접점 IP 또는 공인 DNS 이름 (수신 측과 같은 장비여야 합니다)'
+        required: true
+        type: string
+      duration:
+        description: '총 송신 지속(초)'
+        required: false
+        default: '300'
+        type: string
+      interval:
+        description: '버스트 간격(초)'
+        required: false
+        default: '15'
+        type: string
+      use_nc:
+        description: '/dev/udp 대신 nc 경로 사용'
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: '사전 점검 실패에도 강행'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  # 반드시 GitHub-hosted 여야 한다.
+  #
+  # self-hosted 로 옮기면 사내망에서 사내 서버로 쏘게 되어
+  # 외부 ACL 을 전혀 검증하지 못하면서 게이트는 통과한다.
+  # 러너 통합·비용 절감 같은 이유로 이 변경이 제안되기 쉬우므로 주의한다.
+  # 방어책: 프로버가 보낸 SRC 가 사내 대역이면 리스너가 경고를 낸다.
+  probe:
+    name: 송출
+    runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ inputs.public_target }}
+      DURATION: ${{ inputs.duration }}
+      INTERVAL: ${{ inputs.interval }}
+      USE_NC_INPUT: ${{ inputs.use_nc }}
+      FORCE_INPUT: ${{ inputs.force }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 프로브 송신
+        run: |
+          set -o pipefail
+          args=(--target "$TARGET" --duration "$DURATION" --interval "$INTERVAL")
+          if [ "$FORCE_INPUT" = "true" ]; then
+            args+=(--force)
+          fi
+          if [ "$USE_NC_INPUT" = "true" ]; then
+            export USE_NC=1
+          fi
+          probe/acl-probe "${args[@]}" 2>&1 | tee probe.log
+
+      - name: 요약 기록
+        if: always()
+        run: |
+          {
+            echo '## ACL 점검 — 송출 결과'
+            echo
+            echo '> **이 잡의 성공은 송신 완료를 뜻하며 ACL 판정이 아닙니다.**'
+            echo '> 판정은 수신 측(`acl-listen`)의 종료코드에만 존재합니다.'
+            echo '>'
+            echo '> 사전 점검이 성공했어도 UDP 53 만 증명하며 고포트 egress 의 보증은 아닙니다.'
+            echo
+            echo '```'
+            cat probe.log 2>/dev/null || echo '(로그 없음)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
