@@ -379,6 +379,9 @@ main() {
     fi
   done
 
+  # 조기 종료가 아니면 루프가 끝난 뒤 b 는 bursts+1 이다. 실제 수행 횟수로 되돌린다.
+  (( early == 1 )) || b=$bursts
+
   printf '송신 완료: %s발 (버스트 %s/%s회, 대상 %s, 소스 %s)\n' \
     "$sent" "$b" "$bursts" "$target" "$src"
 
@@ -395,6 +398,13 @@ main() {
   fi
 
   printf '주의: 이 결과는 송신 완료만 뜻하며 ACL 판정이 아닙니다. 판정은 수신 측 종료코드입니다.\n'
+
+  # 기계 판독용 한 줄. 워크플로가 이 줄만 grep 해 요약·주석·출력값을 만든다.
+  # 한글 문장을 파싱하는 것보다 안정적이고, 문구를 고쳐도 깨지지 않는다.
+  # 접두사와 키 이름은 계약이다. 고치면 워크플로도 함께 고쳐야 한다.
+  printf 'ACL_PROBE_RESULT sent=%s bursts_done=%s bursts_total=%s ack_mode=%s acks=%s min_acks=%s early=%s src=%s target=%s preflight=%s\n' \
+    "$sent" "$b" "$bursts" "$ack_mode" "$acks" "$min_acks" "$early" "$src" "$target" "$preflight"
+
   exit "$EX_OK"
 }
 
