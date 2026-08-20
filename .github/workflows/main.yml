@@ -50,7 +50,7 @@ jobs:
       USE_NC_INPUT: ${{ inputs.use_nc }}
       FORCE_INPUT: ${{ inputs.force }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 프로브 송신
         run: |
