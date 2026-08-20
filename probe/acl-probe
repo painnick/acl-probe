@@ -16,7 +16,7 @@
 #
 # ── 단일 파일이다 ────────────────────────────────────────────────────
 # 배포를 파일 하나 복사로 끝내기 위해 의존 라이브러리를 두지 않는다.
-# 아래 "미러 블록"은 listen/lib/ports.sh 와 동일한 내용이며,
+# 아래 "미러 블록"은 ansible/roles/acl_check/files/acl-listen 과 동일한 내용이며,
 # test/sync.bats 가 두 블록의 일치를 CI 에서 검증한다.
 #
 # 미러 블록의 상수 일부(BAND_LO·BAND_HI·DEFAULT_WINDOW·DEFAULT_MIN_PORTS)와
@@ -31,7 +31,7 @@
 set -euo pipefail
 
 # ─────────────────────── 미러 블록 시작 ───────────────────────
-# 이 블록은 listen/acl-listen 과 probe/acl-probe 두 곳에 동일하게 존재한다.
+# 이 블록은 acl-listen 과 acl-probe 두 곳에 동일하게 존재한다.
 # 한쪽을 고치면 반드시 다른 쪽도 같이 고친다.
 #
 # 목록이 갈라지면 프로버가 리스너가 보지 않는 포트로 쏘게 되어,
@@ -166,7 +166,7 @@ ACK 에 대하여:
   일이 아니다.
 
 주의: 이 스크립트의 종료코드는 송신 상태만 뜻하며 ACL 판정이 아니다.
-      판정은 수신 측 listen/acl-listen 의 종료코드에만 존재한다.
+      판정은 수신 측 acl-listen 의 종료코드에만 존재한다.
 EOF
 }
 
@@ -337,8 +337,18 @@ main() {
   fi
 
   local bursts sent=0 seq=0 ts port i b=0 acks=0 early=0 ackfile=""
+  local start deadline burst_start now remain bdone=0 expired=0
   bursts=$(probe_burst_count "$duration" "$interval")
   ts=$(date +%s)
+
+  # duration 은 마감이지 버스트 횟수가 아니다.
+  #
+  # 예전에는 duration/interval 로 횟수만 뽑고 매 반복이 정확히 interval 만
+  # 쓴다고 가정했다. ACK 모드에서는 버스트마다 nc 대기가 얹히므로 그 가정이
+  # 깨진다 — 리스너가 침묵하면 60 × (대기 + 5초) 가 되어 5분짜리 실행이
+  # 6~8분을 끌었다. 리스너가 응답할 때는 조기 종료가 그 초과를 가려 준다.
+  start=$(date +%s)
+  deadline=$(( start + duration ))
 
   if (( ack_mode == 1 )); then
     ackfile=$(mktemp "${TMPDIR:-/tmp}/acl-probe-ack.XXXXXX")
@@ -350,6 +360,7 @@ main() {
   fi
 
   for (( b = 1; b <= bursts; b++ )); do
+    burst_start=$(date +%s)
     while read -r port; do
       for (( i = 1; i <= packets; i++ )); do
         seq=$(( seq + 1 ))
@@ -364,26 +375,40 @@ main() {
       done
     done < <(ports_all)
 
+    bdone=$(( bdone + 1 ))
+
     if (( ack_mode == 1 )); then
       wait
       acks=$(probe_count_acks "$ackfile")
       if (( acks >= min_acks )); then
-        log_info "ACK ${acks}건 수신 — 조기 종료합니다 (버스트 ${b}/${bursts})"
+        log_info "ACK ${acks}건 수신 — 조기 종료합니다 (버스트 ${bdone}/${bursts})"
         early=1
         break
       fi
     fi
 
+    now=$(date +%s)
+    if (( now >= deadline )); then
+      expired=1
+      break
+    fi
+
+    # 간격은 버스트 시작 기준이다. 버스트가 쓴 시간만큼 빼고 남은 만큼만 쉰다.
+    # 이렇게 해야 ACK 대기가 간격 안으로 흡수된다.
     if (( b < bursts )); then
-      sleep "$interval"
+      remain=$(( interval - ( now - burst_start ) ))
+      if (( remain > 0 )); then
+        sleep "$remain"
+      fi
     fi
   done
 
-  # 조기 종료가 아니면 루프가 끝난 뒤 b 는 bursts+1 이다. 실제 수행 횟수로 되돌린다.
-  (( early == 1 )) || b=$bursts
+  if (( expired == 1 )) && (( bdone < bursts )); then
+    log_info "지속 시간 ${duration}초에 도달 — 버스트 ${bdone}/${bursts}회에서 멈춥니다"
+  fi
 
   printf '송신 완료: %s발 (버스트 %s/%s회, 대상 %s, 소스 %s)\n' \
-    "$sent" "$b" "$bursts" "$target" "$src"
+    "$sent" "$bdone" "$bursts" "$target" "$src"
 
   if (( ack_mode == 1 )); then
     if (( early == 1 )); then
@@ -403,7 +428,7 @@ main() {
   # 한글 문장을 파싱하는 것보다 안정적이고, 문구를 고쳐도 깨지지 않는다.
   # 접두사와 키 이름은 계약이다. 고치면 워크플로도 함께 고쳐야 한다.
   printf 'ACL_PROBE_RESULT sent=%s bursts_done=%s bursts_total=%s ack_mode=%s acks=%s min_acks=%s early=%s src=%s target=%s preflight=%s\n' \
-    "$sent" "$b" "$bursts" "$ack_mode" "$acks" "$min_acks" "$early" "$src" "$target" "$preflight"
+    "$sent" "$bdone" "$bursts" "$ack_mode" "$acks" "$min_acks" "$early" "$src" "$target" "$preflight"
 
   exit "$EX_OK"
 }
