@@ -62,7 +62,9 @@ jobs:
           if [ "$USE_NC_INPUT" = "true" ]; then
             export USE_NC=1
           fi
-          probe/acl-probe "${args[@]}" 2>&1 | tee probe.log
+          # bash 로 명시 호출한다. 실행 권한 비트에 의존하지 않는다.
+          # 체크아웃·zip 다운로드·파일 복사 등 파일이 어떤 경로로 왔든 동작해야 한다.
+          bash probe/acl-probe "${args[@]}" 2>&1 | tee probe.log
 
       - name: 요약 기록
         if: always()
